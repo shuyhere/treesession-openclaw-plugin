@@ -1,0 +1,13 @@
+{
+  "name": "@shuyhere/treesession-openclaw-plugin",
+  "version": "0.1.0",
+  "description": "Automatic routed hierarchical context and memory management middleware for OpenClaw",
+  "type": "module",
+  "main": "./index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "license": "MIT"
+}

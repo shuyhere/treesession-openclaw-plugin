@@ -1,0 +1,68 @@
+{
+  "id": "treesession-openclaw-plugin",
+  "name": "treesession OpenClaw Plugin",
+  "description": "Single-session auto topic routing and hierarchical context management middleware",
+  "version": "0.4.0",
+  "kind": "lifecycle",
+  "main": "./index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "storageDir": { "type": "string", "description": "Directory for treesession state files" },
+      "recentTurns": { "type": "integer", "default": 8 },
+      "retrievalTurns": { "type": "integer", "default": 6 },
+      "summaryEveryTurns": { "type": "integer", "default": 10 },
+      "maxBranches": { "type": "integer", "default": 80 },
+      "branchCreateThreshold": { "type": "number", "default": 0.22 },
+      "forceTopicPrefix": { "type": "string", "default": "topic:" },
+      "includeSiblingFallback": { "type": "boolean", "default": true },
+      "maxPrependedChars": { "type": "integer", "default": 6000 },
+
+      "routingStrategy": {
+        "type": "string",
+        "enum": ["score", "model", "hybrid"],
+        "default": "hybrid",
+        "description": "Routing strategy. 'hybrid' (default) uses fast keyword scoring with LLM fallback for ambiguous cases. 'score' is pure keyword-based (no model calls). 'model' always uses LLM. Model calls use the gateway loopback — no extra API key needed."
+      },
+      "hybridModelFallbackThreshold": { "type": "number", "default": 0.32 },
+      "hybridAmbiguityMargin": { "type": "number", "default": 0.08 },
+      "modelRoutingModel": {
+        "type": "string",
+        "default": "same",
+        "description": "Model for routing decisions. 'same' uses your onboarded model via the gateway."
+      },
+      "modelRoutingModelFallback": { "type": "string", "default": "gpt-4o-mini" },
+      "modelRoutingBaseUrl": {
+        "type": "string",
+        "description": "Override base URL for model routing. Not needed when using the gateway (default)."
+      },
+      "modelRoutingApiKey": {
+        "type": "string",
+        "description": "Override API key for model routing. Not needed when using the gateway (default)."
+      },
+
+      "branchNamingMode": { "type": "string", "enum": ["keyword", "model"], "default": "model" },
+      "branchNamingModel": {
+        "type": "string",
+        "default": "same",
+        "description": "Model for branch naming. 'same' uses your onboarded model via the gateway."
+      },
+      "branchNamingModelFallback": { "type": "string", "default": "gpt-4o-mini" },
+      "branchNamingBaseUrl": {
+        "type": "string",
+        "description": "Override base URL for branch naming. Not needed when using the gateway (default)."
+      },
+      "branchNamingApiKey": {
+        "type": "string",
+        "description": "Override API key for branch naming. Not needed when using the gateway (default)."
+      },
+
+      "autoReorgEnabled": { "type": "boolean", "default": true },
+      "reorgIdleDays": { "type": "number", "default": 7 },
+      "reorgCooldownHours": { "type": "number", "default": 24 },
+      "reorgMaxOps": { "type": "integer", "default": 3 }
+    },
+    "additionalProperties": false
+  }
+}
