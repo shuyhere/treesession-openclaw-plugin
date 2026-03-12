@@ -271,9 +271,14 @@ function stripTreesessionEnvelope(text = '') {
   }
 
   // Remove OpenClaw metadata wrappers that are forwarded in the raw user text.
+  // These come as: "Label (untrusted metadata):\n```json\n{...}\n```"
   t = t.replace(/Conversation info \(untrusted metadata\):[\s\S]*?```\s*/gi, '');
   t = t.replace(/Sender \(untrusted metadata\):[\s\S]*?```\s*/gi, '');
   t = t.replace(/Chat history since last reply \(untrusted, for context\):[\s\S]*?```\s*/gi, '');
+  // Fallback: strip any remaining "...(untrusted metadata):" blocks with JSON
+  t = t.replace(/\w[\w\s]*\(untrusted(?:\s+metadata)?\)\s*:\s*```[\s\S]*?```\s*/gi, '');
+  // Strip raw JSON blocks containing message_id/sender_id (Discord metadata leaked without label)
+  t = t.replace(/```json\s*\{[^}]*"(?:message_id|sender_id|sender|timestamp)"[^}]*\}\s*```/gi, '');
 
   // Remove JSON envelope fragments and branch file tree dumps.
   t = t.replace(/Branch file tree \(\* active\):[\s\S]*$/gi, '');
@@ -296,8 +301,18 @@ function cleanContentForStorage(text = '') {
   t = t.replace(/"message_id"\s*:\s*"[^"]*"/g, '');
   t = t.replace(/"channel_id"\s*:\s*"[^"]*"/g, '');
   t = t.replace(/"sender_id"\s*:\s*"[^"]*"/g, '');
+  t = t.replace(/"sender"\s*:\s*"[^"]*"/g, '');
   t = t.replace(/"timestamp"\s*:\s*"[^"]*"/g, '');
+  t = t.replace(/"label"\s*:\s*"[^"]*"/g, '');
+  t = t.replace(/"username"\s*:\s*"[^"]*"/g, '');
+  t = t.replace(/"tag"\s*:\s*"[^"]*"/g, '');
+  t = t.replace(/"name"\s*:\s*"[^"]*"/g, '');
+  t = t.replace(/"id"\s*:\s*"[^"]*"/g, '');
   t = t.replace(/\bjson\s*\{[\s\S]*$/gi, '');
+  // Strip OpenClaw reply routing tags
+  t = t.replace(/\[\[reply_to_\w+\]\]/g, '');
+  // Strip residual empty JSON objects and curly braces
+  t = t.replace(/\{\s*[,\s]*\}/g, '');
 
   return t.replace(/\s+/g, ' ').trim();
 }
@@ -372,6 +387,25 @@ function resolveSessionRoutingKey(ctx, event) {
 
 function estimateTokensApprox(text = '') {
   return Math.max(0, Math.ceil((text || '').length / 4));
+}
+
+/**
+ * Detect if a prompt is an internal treesession routing/naming call
+ * that was re-entered through the gateway chatCompletions endpoint.
+ * These must be skipped to prevent infinite recursion.
+ */
+function isInternalRoutingCall(prompt) {
+  if (!prompt || typeof prompt !== 'string') return false;
+  // Routing payloads always contain these JSON keys
+  if (prompt.includes('"activeBranchId"') && prompt.includes('"branches"')) return true;
+  // Branch naming payloads
+  if (prompt.includes('Return a concise branch title') || prompt.includes('concise branch title')) return true;
+  // Route judge system prompts that leaked into user content
+  if (prompt.includes('route judge for hierarchical conversation branches')) return true;
+  // JSON-only routing fallback
+  if (prompt.includes('"action":"existing"') && prompt.includes('"confidence"')) return true;
+  if (prompt.includes('"action":"new"') && prompt.includes('"confidence"')) return true;
+  return false;
 }
 
 function buildRoutingHistoryTurns(activeBranch, event, prompt, maxTurns = 14) {
@@ -544,6 +578,11 @@ export default {
 
     api.on('before_agent_start', async (event, ctx) => {
       if (!cfg.enabled) return;
+      const rawPrompt = extractText(event?.prompt || event?.messages?.slice(-1)?.[0]?.content);
+      if (isInternalRoutingCall(rawPrompt)) {
+        log.info?.('[treesession] skipping internal routing call (before_agent_start)');
+        return;
+      }
       const prompt = stripTreesessionEnvelope(event?.prompt || '');
       if (!prompt || prompt.length < 2) return;
 
@@ -807,6 +846,11 @@ export default {
     // ── before_prompt_build: routing + context injection (fires before EVERY model request) ──
     api.on('before_prompt_build', async (event, ctx) => {
       if (!cfg.enabled) return;
+      const rawPrompt = extractText(event?.prompt || event?.messages?.slice(-1)?.[0]?.content);
+      if (isInternalRoutingCall(rawPrompt)) {
+        log.info?.('[treesession] skipping internal routing call (before_prompt_build)');
+        return;
+      }
       const prompt = stripTreesessionEnvelope(event?.prompt || '');
       if (!prompt || prompt.length < 2) return;
 
@@ -999,6 +1043,12 @@ export default {
     api.on('agent_end', async (event, ctx) => {
       if (!cfg.enabled) return;
       if (!event?.success || !event?.messages?.length) return;
+      // Skip internal routing/naming calls to prevent recursive state pollution
+      const lastMsg = event.messages.slice(-1)[0];
+      if (lastMsg && isInternalRoutingCall(extractText(lastMsg.content))) {
+        log.info?.('[treesession] skipping internal routing call (agent_end)');
+        return;
+      }
 
       const routingSessionKey = resolveSessionRoutingKey(ctx, event);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
