@@ -25,8 +25,8 @@ function getCfg(pluginConfig = {}) {
     maxPrependedChars: pluginConfig.maxPrependedChars ?? 6000,
     branchTurns: pluginConfig.branchTurns ?? 10,
 
-    // Naming
-    branchNamingMode: pluginConfig.branchNamingMode || 'model',
+    // Naming — default to 'keyword' (instant) to avoid slow model calls through gateway
+    branchNamingMode: pluginConfig.branchNamingMode || 'keyword',
     branchNamingModel:
       pluginConfig.branchNamingModel ||
       pluginConfig.branchNamingModelFallback ||
@@ -950,8 +950,14 @@ export default {
         const ambiguous = cand.length > 1 && Math.abs(top - second) < cfg.hybridAmbiguityMargin;
         const lowConfidence = top < cfg.hybridModelFallbackThreshold;
 
-        if (forcedTopic || (!ambiguous && !lowConfidence)) {
+        // Skip model fallback when score router can decide on its own:
+        // - forced topic, or score is confident, or fewer than 3 branches (nothing to be ambiguous about)
+        const tooFewBranches = state.branches.length < 3;
+        if (forcedTopic || (!ambiguous && !lowConfidence) || tooFewBranches) {
           route = scoreRoute;
+          if (tooFewBranches && (ambiguous || lowConfidence)) {
+            log.info?.('[treesession] hybrid: skipping model call (only ${state.branches.length} branches — score router sufficient)');
+          }
         } else {
           const modelRoute = await routeWithModel({
             prompt,
