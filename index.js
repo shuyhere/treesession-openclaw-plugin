@@ -398,13 +398,35 @@ function isInternalRoutingCall(prompt) {
   if (!prompt || typeof prompt !== 'string') return false;
   // Routing payloads always contain these JSON keys
   if (prompt.includes('"activeBranchId"') && prompt.includes('"branches"')) return true;
+  if (prompt.includes('"activeBranchId"') && prompt.includes('"previousUserTurn"')) return true;
   // Branch naming payloads
   if (prompt.includes('Return a concise branch title') || prompt.includes('concise branch title')) return true;
+  if (prompt.includes('Conversation turn:') && prompt.includes('branch title')) return true;
   // Route judge system prompts that leaked into user content
   if (prompt.includes('route judge for hierarchical conversation branches')) return true;
   // JSON-only routing fallback
   if (prompt.includes('"action":"existing"') && prompt.includes('"confidence"')) return true;
   if (prompt.includes('"action":"new"') && prompt.includes('"confidence"')) return true;
+  return false;
+}
+
+/**
+ * Check ALL message content in an event for internal routing patterns.
+ * The gateway may pass the prompt in event.prompt, event.messages, or both.
+ */
+function isInternalRoutingEvent(event) {
+  // Check event.prompt
+  const prompt = extractText(event?.prompt);
+  if (isInternalRoutingCall(prompt)) return true;
+  // Check all messages
+  const msgs = event?.messages || [];
+  for (const m of msgs) {
+    const text = extractText(m?.content);
+    if (isInternalRoutingCall(text)) return true;
+  }
+  // Check system message (routing system prompts)
+  const sys = extractText(event?.system || event?.systemPrompt);
+  if (sys && isInternalRoutingCall(sys)) return true;
   return false;
 }
 
@@ -578,8 +600,7 @@ export default {
 
     api.on('before_agent_start', async (event, ctx) => {
       if (!cfg.enabled) return;
-      const rawPrompt = extractText(event?.prompt || event?.messages?.slice(-1)?.[0]?.content);
-      if (isInternalRoutingCall(rawPrompt)) {
+      if (isInternalRoutingEvent(event)) {
         log.info?.('[treesession] skipping internal routing call (before_agent_start)');
         return;
       }
@@ -846,8 +867,7 @@ export default {
     // ── before_prompt_build: routing + context injection (fires before EVERY model request) ──
     api.on('before_prompt_build', async (event, ctx) => {
       if (!cfg.enabled) return;
-      const rawPrompt = extractText(event?.prompt || event?.messages?.slice(-1)?.[0]?.content);
-      if (isInternalRoutingCall(rawPrompt)) {
+      if (isInternalRoutingEvent(event)) {
         log.info?.('[treesession] skipping internal routing call (before_prompt_build)');
         return;
       }
@@ -1043,9 +1063,7 @@ export default {
     api.on('agent_end', async (event, ctx) => {
       if (!cfg.enabled) return;
       if (!event?.success || !event?.messages?.length) return;
-      // Skip internal routing/naming calls to prevent recursive state pollution
-      const lastMsg = event.messages.slice(-1)[0];
-      if (lastMsg && isInternalRoutingCall(extractText(lastMsg.content))) {
+      if (isInternalRoutingEvent(event)) {
         log.info?.('[treesession] skipping internal routing call (agent_end)');
         return;
       }
