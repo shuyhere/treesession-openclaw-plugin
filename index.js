@@ -557,6 +557,7 @@ export default {
         state.routeTurnCounter = 0;
         state.routeDecisions = [];
         state.lastRouteDecision = null;
+        state.treeSessionActive = true; // Only explicitly started sessions get tree routing
 
         const titleArg = String(cmdCtx.args || '').trim() || 'new-tree-session';
         const modelTitle = await generateBranchTitle({
@@ -639,19 +640,25 @@ export default {
       const runtimeModel = getRuntimeModelId(event, ctx);
       const routingSessionKey = resolveSessionRoutingKey(ctx, event, log);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
+
+      // Commands (like startnewtreesession) must work even before tree session is active
+      const cmd = parseBranchCommand(prompt);
+
+      // For non-command messages, only process if tree session is active
+      if (!cmd && !state.treeSessionActive) {
+        return;
+      }
+
       if (typeof state.autoRoutingEnabled !== 'boolean') state.autoRoutingEnabled = true;
       if (!Number.isFinite(state.routeTurnCounter)) state.routeTurnCounter = 0;
       if (!Array.isArray(state.routeDecisions)) state.routeDecisions = [];
       hydrateBranchStats(state);
 
-      // Periodic model reorganization on idle tree
-      if (needAutoReorg(state, cfg)) {
+      // Periodic model reorganization on idle tree (only for active tree sessions)
+      if (state.treeSessionActive && needAutoReorg(state, cfg)) {
         const r = await modelReorganizeTree({ state, cfg, runtimeModel, invokeModel, force: false, log });
         if (r.changed) log.info?.(`[treesession] auto-reorg applied (${r.applied || 0} merges)`);
       }
-
-      // Commands
-      const cmd = parseBranchCommand(prompt);
 
       if (cmd?.type === 'auto_mode') {
         if (cmd.action === 'on') state.autoRoutingEnabled = true;
@@ -678,6 +685,7 @@ export default {
         state.routeTurnCounter = 0;
         state.routeDecisions = [];
         state.lastRouteDecision = null;
+        state.treeSessionActive = true;
 
         const modelTitle = await generateBranchTitle({
           prompt: cmd.title,
@@ -893,7 +901,8 @@ export default {
       // Auto routing + context composition is done in before_prompt_build (fires before every model request).
     });
 
-    // ── before_prompt_build: routing + context injection (fires before EVERY model request) ──
+    // ── before_prompt_build: routing + context injection ──
+    // Only fires for sessions explicitly started with /startnewtreesession.
     api.on('before_prompt_build', async (event, ctx) => {
       if (!cfg.enabled) return;
       if (isInternalRoutingEvent(event)) {
@@ -906,6 +915,13 @@ export default {
       const runtimeModel = getRuntimeModelId(event, ctx);
       const routingSessionKey = resolveSessionRoutingKey(ctx, event, log);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
+
+      // Only activate for sessions explicitly started with /startnewtreesession
+      if (!state.treeSessionActive) {
+        log.info?.(`[treesession] session ${routingSessionKey} is not a tree session — skipping`);
+        return;
+      }
+
       if (typeof state.autoRoutingEnabled !== 'boolean') state.autoRoutingEnabled = true;
       if (!Number.isFinite(state.routeTurnCounter)) state.routeTurnCounter = 0;
       if (!Array.isArray(state.routeDecisions)) state.routeDecisions = [];
@@ -1105,6 +1121,10 @@ export default {
 
       const routingSessionKey = resolveSessionRoutingKey(ctx, event, log);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
+
+      // Only store turns for sessions explicitly started with /startnewtreesession
+      if (!state.treeSessionActive) return;
+
       hydrateBranchStats(state);
       const branchId = runtimeRoute.get(routingSessionKey) || state.activeBranchId;
       const branch = state.branches.find((b) => b.id === branchId);
