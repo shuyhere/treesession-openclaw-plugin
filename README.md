@@ -1,10 +1,27 @@
-# treesession — OpenClaw Plugin 🌳
+<p align="center">
+  <img src="https://em-content.zobj.net/source/apple/391/deciduous-tree_1f333.png" width="120" />
+</p>
+
+<h1 align="center">treesession</h1>
+
+<h3 align="center">OpenClaw Plugin</h3>
+
+<p align="center">
+  <strong>Never start a new session — but never lose the context.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/openclaw/openclaw">OpenClaw</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#token-savings-benchmarked">Benchmarks</a>
+</p>
+
+---
 
 **Automatic topic-branching context manager for [OpenClaw](https://github.com/openclaw/openclaw) agents.**
 
-Keep users in one chat session while internally managing a hierarchical branch tree. Reduces token usage by **75–90%** on multi-topic conversations.
-
-> One chat. Many topics. Zero context pollution.
+One session. Infinite topics. Every conversation remembered, nothing polluted. Reduces token usage by **75–90%** while keeping full context for every topic you've ever discussed.
 
 ## How it works
 
