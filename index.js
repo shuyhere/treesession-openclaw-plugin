@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import fsSync from 'fs';
+import path from 'path';
 import { loadState, saveState, createBranch } from './lib/store.js';
 import { parseForcedTopic, routePromptToBranch } from './lib/router.js';
 import { composePrependedContext, maybeRefreshSummary } from './lib/composer.js';
-import { topKeywords } from './lib/util.js';
+import { topKeywords, expandHome } from './lib/util.js';
 import { generateBranchTitle } from './lib/naming.js';
 import { parseBranchCommand } from './lib/commands.js';
 import { routeWithModel } from './lib/model-router.js';
@@ -395,39 +397,33 @@ function estimateTokensApprox(text = '') {
  * that was re-entered through the gateway chatCompletions endpoint.
  * These must be skipped to prevent infinite recursion.
  */
-function isInternalRoutingCall(prompt) {
-  if (!prompt || typeof prompt !== 'string') return false;
-  // Routing payloads always contain these JSON keys
-  if (prompt.includes('"activeBranchId"') && prompt.includes('"branches"')) return true;
-  if (prompt.includes('"activeBranchId"') && prompt.includes('"previousUserTurn"')) return true;
-  // Branch naming payloads
-  if (prompt.includes('Return a concise branch title') || prompt.includes('concise branch title')) return true;
-  if (prompt.includes('Conversation turn:') && prompt.includes('branch title')) return true;
-  // Route judge system prompts that leaked into user content
-  if (prompt.includes('route judge for hierarchical conversation branches')) return true;
-  // JSON-only routing fallback
-  if (prompt.includes('"action":"existing"') && prompt.includes('"confidence"')) return true;
-  if (prompt.includes('"action":"new"') && prompt.includes('"confidence"')) return true;
-  return false;
-}
-
 /**
- * Check ALL message content in an event for internal routing patterns.
- * The gateway may pass the prompt in event.prompt, event.messages, or both.
+ * Detect if an event is an internal treesession routing/naming call
+ * re-entered through the gateway. Only checks the LAST user message
+ * and the system prompt — NOT full conversation history (which may
+ * contain routing patterns from normal treesession context).
  */
 function isInternalRoutingEvent(event) {
-  // Check event.prompt
-  const prompt = extractText(event?.prompt);
-  if (isInternalRoutingCall(prompt)) return true;
-  // Check all messages
+  // Get the prompt or last user message — this is what the current request is about
+  const prompt = extractText(event?.prompt) || '';
   const msgs = event?.messages || [];
-  for (const m of msgs) {
-    const text = extractText(m?.content);
-    if (isInternalRoutingCall(text)) return true;
+  const lastUserMsg = [...msgs].reverse().find(m => m?.role === 'user');
+  const lastUserText = extractText(lastUserMsg?.content) || '';
+  const sysText = extractText(event?.system || event?.systemPrompt) || '';
+
+  // Check text to examine: prompt OR last user message (not all history)
+  const textsToCheck = [prompt, lastUserText, sysText].filter(Boolean);
+
+  for (const text of textsToCheck) {
+    // Routing JSON payloads: {"activeBranchId":"...","previousUserTurn":"...","prompt":"...","branches":[...]}
+    if (text.includes('"activeBranchId"') && text.includes('"previousUserTurn"')) return true;
+    if (text.includes('"activeBranchId"') && text.includes('"branches"') && text.includes('"historyTurns"')) return true;
+    // Branch naming payloads
+    if (text.includes('Return a concise branch title')) return true;
+    // Route judge system prompt
+    if (text.includes('route judge for hierarchical conversation branches')) return true;
   }
-  // Check system message (routing system prompts)
-  const sys = extractText(event?.system || event?.systemPrompt);
-  if (sys && isInternalRoutingCall(sys)) return true;
+
   return false;
 }
 
@@ -501,21 +497,46 @@ export default {
       log.warn?.('[treesession] model invocation UNAVAILABLE — falling back to score-only routing. Check config.models.providers.');
     }
 
-    // Use the same session key resolution as hooks so commands and hooks share state.
+    // Resolve command session key to match what hooks use.
+    // Hook ctx.sessionKey looks like "agent:main:discord:direct:1016345962735734895"
+    // Command cmdCtx has: senderId, channel, channelId, accountId, etc.
+    // We try to reconstruct the same key, and also scan existing state files to find a match.
     function resolveCommandSessionKey(cmdCtx = {}) {
-      // Try the same candidates as resolveSessionRoutingKey to get identical keys
-      const candidates = [
-        cmdCtx.sessionKey,
-        cmdCtx.threadSessionKey,
-        cmdCtx.threadId,
-        cmdCtx.subagentThreadId,
-        cmdCtx.chatId,
-      ].filter(Boolean);
-      const key = candidates.length <= 1
-        ? (candidates[0] || `command:${cmdCtx.channel || 'unknown'}:${cmdCtx.senderId || 'unknown'}`)
-        : candidates.join('::');
-      log.info?.(`[treesession] resolveCommandSessionKey: ${key} (from keys: ${JSON.stringify(Object.keys(cmdCtx).filter(k => cmdCtx[k]))})`);
-      return key;
+      // 1. If cmdCtx has sessionKey directly, use it
+      if (cmdCtx.sessionKey) {
+        log.info?.(`[treesession] resolveCommandSessionKey: using cmdCtx.sessionKey = ${cmdCtx.sessionKey}`);
+        return cmdCtx.sessionKey;
+      }
+
+      // 2. Try to find existing state file that matches this user's Discord DM/channel
+      const senderId = cmdCtx.senderId || '';
+      const channel = cmdCtx.channel || '';
+      const channelId = cmdCtx.channelId || '';
+
+      // Scan state files for a match with this sender/channel
+      const stateDir = expandHome(cfg.storageDir || '~/.openclaw/treesession-store');
+      try {
+        const files = fsSync.readdirSync(stateDir);
+        // Look for files containing the sender ID or channel ID
+        for (const f of files) {
+          if (senderId && f.includes(senderId)) {
+            // Extract session key from the state file
+            try {
+              const state = JSON.parse(fsSync.readFileSync(path.join(stateDir, f), 'utf8'));
+              if (state.sessionKey && state.branches?.length > 0) {
+                log.info?.(`[treesession] resolveCommandSessionKey: found matching state file ${f} -> ${state.sessionKey}`);
+                return state.sessionKey;
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+
+      // 3. Construct key matching OpenClaw's format: agent:{agentId}:{channel}:direct:{senderId}
+      const agentId = cmdCtx.agentId || cmdCtx.agent || 'main';
+      const constructed = `agent:${agentId}:${channel}:direct:${senderId}`;
+      log.info?.(`[treesession] resolveCommandSessionKey: constructed ${constructed} (from: channel=${channel}, senderId=${senderId})`);
+      return constructed;
     }
 
     api.registerCommand?.({
