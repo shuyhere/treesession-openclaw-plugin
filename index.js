@@ -628,6 +628,78 @@ export default {
       },
     });
 
+    api.registerCommand?.({
+      name: 'treestatus',
+      nativeNames: { default: ['treestatus'], discord: ['treestatus'] },
+      description: 'Show tree session status: branches, active branch, turn counts, and token savings',
+      acceptsArgs: false,
+      requireAuth: true,
+      handler: async (cmdCtx) => {
+        if (!cfg.enabled) return { text: 'treesession plugin is disabled.' };
+
+        const sessionKey = resolveCommandSessionKey(cmdCtx);
+        const agentId = cmdCtx.agentId || cmdCtx.agent || '';
+        const { state } = await loadState(cfg.storageDir, sessionKey, agentId);
+
+        if (!state.treeSessionActive) {
+          return { text: 'No active tree session. Use /startnewtreesession to start one.' };
+        }
+
+        hydrateBranchStats(state);
+        const active = state.branches.find((b) => b.id === state.activeBranchId) || null;
+        const totalTurns = state.branches.reduce((s, b) => s + (b.turns?.length || 0), 0);
+
+        // Token savings
+        const allTurns = flattenTurnsChronological(state);
+        const fullHistoryText = allTurns.map((t) => `${t.role}: ${t.content}`).join('\n');
+        const fullTokens = estimateTokensApprox(fullHistoryText);
+        let activeTokens = 0;
+        if (active) {
+          const prepended = composePrependedContext({
+            branch: active,
+            branches: state.branches,
+            activeBranchId: state.activeBranchId,
+            recentTurns: cfg.recentTurns,
+            retrievalTurns: cfg.retrievalTurns,
+            maxPrependedChars: cfg.maxPrependedChars,
+            prompt: '',
+            branchTurns: cfg.branchTurns,
+          });
+          activeTokens = estimateTokensApprox(prepended || '');
+        }
+        const savedTokens = Math.max(0, fullTokens - activeTokens);
+        const savedPct = fullTokens > 0 ? (savedTokens / fullTokens) * 100 : 0;
+
+        // Build branch list
+        const branchLines = state.branches.map((b) => {
+          const isActive = b.id === state.activeBranchId ? ' ← active' : '';
+          const turns = b.turns?.length || 0;
+          const kw = (b.keywords || []).slice(0, 4).join(', ');
+          return `  • ${b.title} (${turns} turns${kw ? ', kw: ' + kw : ''})${isActive}`;
+        });
+
+        const lines = [
+          '🌲 Tree Session Status',
+          '',
+          `Strategy: ${cfg.routingStrategy}`,
+          `Branches: ${state.branches.length}`,
+          `Total turns: ${totalTurns}`,
+          `Active branch: ${active?.title || 'none'}`,
+          `Auto routing: ${state.autoRoutingEnabled !== false ? 'on' : 'off'}`,
+          '',
+          'Branches:',
+          ...branchLines,
+          '',
+          'Token savings (approx):',
+          `  Full history: ${fullTokens} tokens`,
+          `  Active context: ${activeTokens} tokens`,
+          `  Saved: ${savedTokens} tokens (${savedPct.toFixed(1)}%)`,
+        ];
+
+        return { text: lines.join('\n') };
+      },
+    });
+
     api.on('before_agent_start', async (event, ctx) => {
       if (!cfg.enabled) return;
       if (isInternalRoutingEvent(event)) {
