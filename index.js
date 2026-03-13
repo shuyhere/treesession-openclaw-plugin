@@ -370,7 +370,7 @@ function normalizeRouteDecision({ turn, route, branch, createdNew }) {
   };
 }
 
-function resolveSessionRoutingKey(ctx, event) {
+function resolveSessionRoutingKey(ctx, event, log) {
   const candidates = [
     ctx?.sessionKey,
     ctx?.threadId,
@@ -381,8 +381,9 @@ function resolveSessionRoutingKey(ctx, event) {
   ].filter(Boolean);
 
   // Keep backward compatibility: if only sessionKey exists, key remains unchanged.
-  if (candidates.length <= 1) return candidates[0] || 'session';
-  return candidates.join('::');
+  const key = candidates.length <= 1 ? (candidates[0] || 'session') : candidates.join('::');
+  log?.info?.(`[treesession] resolveSessionRoutingKey: ${key}`);
+  return key;
 }
 
 function estimateTokensApprox(text = '') {
@@ -500,14 +501,21 @@ export default {
       log.warn?.('[treesession] model invocation UNAVAILABLE — falling back to score-only routing. Check config.models.providers.');
     }
 
+    // Use the same session key resolution as hooks so commands and hooks share state.
     function resolveCommandSessionKey(cmdCtx = {}) {
-      return (
-        cmdCtx.sessionKey ||
-        cmdCtx.threadSessionKey ||
-        cmdCtx.threadId ||
-        cmdCtx.chatId ||
-        `command:${cmdCtx.channel || 'unknown'}:${cmdCtx.senderId || 'unknown'}`
-      );
+      // Try the same candidates as resolveSessionRoutingKey to get identical keys
+      const candidates = [
+        cmdCtx.sessionKey,
+        cmdCtx.threadSessionKey,
+        cmdCtx.threadId,
+        cmdCtx.subagentThreadId,
+        cmdCtx.chatId,
+      ].filter(Boolean);
+      const key = candidates.length <= 1
+        ? (candidates[0] || `command:${cmdCtx.channel || 'unknown'}:${cmdCtx.senderId || 'unknown'}`)
+        : candidates.join('::');
+      log.info?.(`[treesession] resolveCommandSessionKey: ${key} (from keys: ${JSON.stringify(Object.keys(cmdCtx).filter(k => cmdCtx[k]))})`);
+      return key;
     }
 
     api.registerCommand?.({
@@ -608,7 +616,7 @@ export default {
       if (!prompt || prompt.length < 2) return;
 
       const runtimeModel = getRuntimeModelId(event, ctx);
-      const routingSessionKey = resolveSessionRoutingKey(ctx, event);
+      const routingSessionKey = resolveSessionRoutingKey(ctx, event, log);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
       if (typeof state.autoRoutingEnabled !== 'boolean') state.autoRoutingEnabled = true;
       if (!Number.isFinite(state.routeTurnCounter)) state.routeTurnCounter = 0;
@@ -875,7 +883,7 @@ export default {
       if (!prompt || prompt.length < 2) return;
 
       const runtimeModel = getRuntimeModelId(event, ctx);
-      const routingSessionKey = resolveSessionRoutingKey(ctx, event);
+      const routingSessionKey = resolveSessionRoutingKey(ctx, event, log);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
       if (typeof state.autoRoutingEnabled !== 'boolean') state.autoRoutingEnabled = true;
       if (!Number.isFinite(state.routeTurnCounter)) state.routeTurnCounter = 0;
@@ -1074,7 +1082,7 @@ export default {
         return;
       }
 
-      const routingSessionKey = resolveSessionRoutingKey(ctx, event);
+      const routingSessionKey = resolveSessionRoutingKey(ctx, event, log);
       const { file, state } = await loadState(cfg.storageDir, routingSessionKey, ctx?.agentId);
       hydrateBranchStats(state);
       const branchId = runtimeRoute.get(routingSessionKey) || state.activeBranchId;
